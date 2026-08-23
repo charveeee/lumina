@@ -83,17 +83,20 @@
       // Keep the source passage separate from the text Lumina renders after adapting it.
       p.dataset.originalText = p.textContent.trim();
 
-      p.addEventListener('mouseenter', () => {
-        if (p.dataset.adapted === 'true') {
-          statusEl.innerText = 'Status: This paragraph is already adapted (hit Reset to try again)';
-          return;
-        }
+      // Tracks the elapsed-seconds value we last re-adapted at, so we only
+      // re-trigger every ~3s of continuous hovering instead of every tick.
+      p.dataset.lastTriggerSecond = '0';
 
+      p.addEventListener('mouseenter', () => {
         hoverStart = Date.now();
         timerInterval = setInterval(() => {
           let elapsed = Math.floor((Date.now() - hoverStart) / 1000);
           timerEl.innerText = `Dwell Time: ${elapsed}s`;
-          if (elapsed >= 2) triggerAdaptiveAI(p, elapsed);
+          const lastTrigger = parseInt(p.dataset.lastTriggerSecond, 10);
+          if (elapsed >= 2 && elapsed - lastTrigger >= 3) {
+            p.dataset.lastTriggerSecond = String(elapsed);
+            triggerAdaptiveAI(p, elapsed);
+          }
         }, 500);
       });
 
@@ -104,13 +107,13 @@
     });
 
     async function triggerAdaptiveAI(element, dwellTime) {
-      // Guard against both repeat hovers and duplicate timer callbacks in flight.
-      if (element.dataset.adapted === 'true' || element.dataset.adapting === 'true') return;
+      // Guard only against overlapping in-flight calls -- re-adaptation while
+      // still hovering is intentional now, not a repeat to block.
+      if (element.dataset.adapting === 'true') return;
 
-      clearInterval(timerInterval);
       element.dataset.adapting = 'true';
       container.classList.add('dyslexia-mode');
-      statusEl.innerText = "Status: Friction Detected! Lumina Engine adapting content...";
+      statusEl.innerText = "Status: Friction detected! Lumina Engine adapting content...";
 
       try {
         const response = await fetch('/api/adapt', {
@@ -126,14 +129,15 @@
         });
         const data = await response.json();
 
-        // Defensive strip in case the model echoes its own label back.
+        // Defensive strip in case a stray label got echoed back.
         const cleanText = (data.adapted_text || '').replace(/^lumina adaptation:\s*/i, '');
         element.textContent = `Lumina Adaptation: ${cleanText}`;
         element.dataset.adapted = 'true';
         element.classList.add('ai-rewrite');
+        const intensityLabel = { light: 'lightly', moderate: 'moderately', aggressive: 'heavily' }[data.intensity] || 'lightly';
         statusEl.innerText = data.personalized
           ? `Status: Proactively adapted for recurring ${data.personalization_trigger}`
-          : "Status: Text adapted; Claude-Mem is observing this reading event";
+          : `Status: Adapted ${intensityLabel} (${dwellTime}s dwell) -- keep hovering to simplify further`;
         refreshMemoryBadge();
         window.setTimeout(refreshMemoryBadge, 1500);
         window.setTimeout(refreshMemoryBadge, 3500);
@@ -149,6 +153,7 @@
         p.textContent = p.dataset.originalText;
         delete p.dataset.adapted;
         delete p.dataset.adapting;
+        p.dataset.lastTriggerSecond = '0';
         p.classList.remove('ai-rewrite');
       });
       container.classList.remove('dyslexia-mode');
