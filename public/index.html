@@ -61,7 +61,15 @@
     refreshMemoryBadge();
 
     document.querySelectorAll('.reading-paragraph').forEach(p => {
+      // Keep the source passage separate from the text Lumina renders after adapting it.
+      p.dataset.originalText = p.textContent.trim();
+
       p.addEventListener('mouseenter', () => {
+        if (p.dataset.adapted === 'true') {
+          statusEl.innerText = 'Status: This paragraph is already adapted';
+          return;
+        }
+
         hoverStart = Date.now();
         timerInterval = setInterval(() => {
           let elapsed = Math.floor((Date.now() - hoverStart) / 1000);
@@ -77,7 +85,11 @@
     });
 
     async function triggerAdaptiveAI(element, dwellTime) {
+      // Guard against both repeat hovers and duplicate timer callbacks in flight.
+      if (element.dataset.adapted === 'true' || element.dataset.adapting === 'true') return;
+
       clearInterval(timerInterval);
+      element.dataset.adapting = 'true';
       container.classList.add('dyslexia-mode');
       statusEl.innerText = "Status: Friction Detected! Lumina Engine adapting content...";
 
@@ -87,7 +99,8 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             paragraph_id: element.dataset.id,
-            text: element.innerText,
+            // Never re-send the adapted display text; this is the original source passage.
+            text: element.dataset.originalText,
             dwell_seconds: dwellTime,
             reader_session_id: readerSessionId
           })
@@ -95,6 +108,7 @@
         const data = await response.json();
         
         element.textContent = `Lumina Adaptation: ${data.adapted_text}`;
+        element.dataset.adapted = 'true';
         element.classList.add('ai-rewrite');
         statusEl.innerText = data.personalized
           ? `Status: Proactively adapted for recurring ${data.personalization_trigger}`
@@ -104,6 +118,8 @@
         window.setTimeout(refreshMemoryBadge, 3500);
       } catch (err) {
         statusEl.innerText = "Status: Fallback mode active (Server offline)";
+      } finally {
+        delete element.dataset.adapting;
       }
     }
   </script>
