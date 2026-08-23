@@ -42,6 +42,23 @@
     const statusEl = document.getElementById('status');
     const timerEl = document.getElementById('timer');
     const container = document.getElementById('readerCard');
+    const memBadge = document.getElementById('memBadge');
+    const readerSessionId = sessionStorage.getItem('lumina-reader-session') || crypto.randomUUID();
+    sessionStorage.setItem('lumina-reader-session', readerSessionId);
+
+    async function refreshMemoryBadge() {
+      try {
+        const response = await fetch(`/api/memory?reader_session_id=${encodeURIComponent(readerSessionId)}`);
+        const memory = await response.json();
+        memBadge.innerText = memory.available
+          ? `Claude-Mem: ${memory.pattern_count} observed pattern${memory.pattern_count === 1 ? '' : 's'}`
+          : 'Claude-Mem: Worker unavailable';
+      } catch (err) {
+        memBadge.innerText = 'Claude-Mem: Worker unavailable';
+      }
+    }
+
+    refreshMemoryBadge();
 
     document.querySelectorAll('.reading-paragraph').forEach(p => {
       p.addEventListener('mouseenter', () => {
@@ -71,15 +88,20 @@
           body: JSON.stringify({
             paragraph_id: element.dataset.id,
             text: element.innerText,
-            dwell_seconds: dwellTime
+            dwell_seconds: dwellTime,
+            reader_session_id: readerSessionId
           })
         });
         const data = await response.json();
         
-        element.innerHTML = `<b>Lumina Adaptation:</b> ${data.adapted_text}`;
+        element.textContent = `Lumina Adaptation: ${data.adapted_text}`;
         element.classList.add('ai-rewrite');
-        document.getElementById('memBadge').innerText = `Claude-Mem: Updated (${data.user_friction_profile.struggle_patterns.length} patterns)`;
-        statusEl.innerText = "Status: Text adapted to user memory profile";
+        statusEl.innerText = data.personalized
+          ? `Status: Proactively adapted for recurring ${data.personalization_trigger}`
+          : "Status: Text adapted; Claude-Mem is observing this reading event";
+        refreshMemoryBadge();
+        window.setTimeout(refreshMemoryBadge, 1500);
+        window.setTimeout(refreshMemoryBadge, 3500);
       } catch (err) {
         statusEl.innerText = "Status: Fallback mode active (Server offline)";
       }
