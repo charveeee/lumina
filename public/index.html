@@ -16,6 +16,8 @@
     .ai-rewrite { background-color: #eff6ff; border-left-color: #3b82f6; font-weight: 500; }
     .status-bar { margin-top: 20px; font-size: 0.9rem; color: #475569; font-weight: 600; display: flex; justify-content: space-between; }
     .badge { background: #e2e8f0; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; }
+    #resetBtn { margin-bottom: 16px; padding: 6px 12px; border-radius: 6px; border: 1px solid #cbd5e1; background: #fff; cursor: pointer; font-size: 0.85rem; }
+    #resetBtn:hover { background: #f1f5f9; }
   </style>
 </head>
 <body>
@@ -24,7 +26,8 @@
       <h1>Lumina</h1>
       <span class="badge" id="memBadge">Claude-Mem: Syncing...</span>
     </div>
-    <hr style="margin-bottom: 24px; border: 0; border-top: 1px solid #e2e8f0;">
+    <hr style="margin-bottom: 16px; border: 0; border-top: 1px solid #e2e8f0;">
+    <button id="resetBtn">Reset session</button>
 
     <p class="reading-paragraph" id="p1" data-id="p1">
       Neural engineering focuses on building direct interfaces between synthetic computational architectures and biological neural networks. Processing dense technical documentation often induces severe cognitive fatigue.
@@ -66,7 +69,7 @@
 
       p.addEventListener('mouseenter', () => {
         if (p.dataset.adapted === 'true') {
-          statusEl.innerText = 'Status: This paragraph is already adapted';
+          statusEl.innerText = 'Status: This paragraph is already adapted (hit Reset to try again)';
           return;
         }
 
@@ -106,8 +109,10 @@
           })
         });
         const data = await response.json();
-        
-        element.textContent = `Lumina Adaptation: ${data.adapted_text}`;
+
+        // Defensive strip in case the model echoes its own label back.
+        const cleanText = (data.adapted_text || '').replace(/^lumina adaptation:\s*/i, '');
+        element.textContent = `Lumina Adaptation: ${cleanText}`;
         element.dataset.adapted = 'true';
         element.classList.add('ai-rewrite');
         statusEl.innerText = data.personalized
@@ -122,6 +127,18 @@
         delete element.dataset.adapting;
       }
     }
+
+    document.getElementById('resetBtn').addEventListener('click', () => {
+      document.querySelectorAll('.reading-paragraph').forEach(p => {
+        p.textContent = p.dataset.originalText;
+        delete p.dataset.adapted;
+        delete p.dataset.adapting;
+        p.classList.remove('ai-rewrite');
+      });
+      container.classList.remove('dyslexia-mode');
+      statusEl.innerText = 'Status: Monitoring reading pace...';
+      timerEl.innerText = 'Dwell Time: 0s';
+    });
   </script>
 </body>
 </html>
