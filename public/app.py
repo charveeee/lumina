@@ -57,7 +57,7 @@ Return an empty list if no clear friction pattern is present."""
 def adapt_with_llm(text: str) -> AdaptResponse:
     """Call OpenAI with a strict JSON schema so the frontend always gets usable data."""
 
-
+    # Import here so a missing optional SDK cannot prevent the static demo from loading.
     from openai import OpenAI
 
     api_key = os.getenv("OPENAI_API_KEY")
@@ -66,7 +66,7 @@ def adapt_with_llm(text: str) -> AdaptResponse:
 
     client = OpenAI(api_key=api_key)
     response = client.responses.create(
-
+        # This inexpensive model keeps the hover-to-adaptation interaction responsive.
         model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         input=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -111,7 +111,8 @@ async def adapt(request: AdaptRequest) -> AdaptResponse:
     try:
         return await run_in_threadpool(adapt_with_llm, request.text)
     except Exception:
-
+        # The page remains usable during missing-key, rate-limit, or network failures.
+        # Log the traceback on the server, but never expose implementation details to users.
         logger.exception("Lumina adaptation failed for paragraph %s", request.paragraph_id)
         return AdaptResponse(
             adapted_text=request.text,
@@ -121,9 +122,8 @@ async def adapt(request: AdaptRequest) -> AdaptResponse:
         )
 
 
-
+# Serve the existing reader interface from this same FastAPI application.
 app.mount("/", StaticFiles(directory=Path(__file__).parent, html=True), name="public")
-
 
 if __name__ == "__main__":
     import uvicorn
