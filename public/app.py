@@ -60,7 +60,7 @@ def adapt_with_llm(text: str) -> AdaptResponse:
     # Import here so a missing optional SDK cannot prevent the static demo from loading.
     from openai import OpenAI
 
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = os.getenv("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")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not configured")
 
