@@ -1,4 +1,11 @@
-"""Lumina's FastAPI application and real-time reading adaptation endpoint."""
+"""Lumina's FastAPI application and real-time reading adaptation endpoint.
+
+Adaptation is fully rule-based (no external LLM call, no API key required):
+it splits overly long sentences, swaps in simpler vocabulary for detected
+jargon, and breaks the result into short readable chunks. Claude-Mem is used
+to track recurring struggle patterns across a reading session so repeat
+patterns get a more aggressive rewrite.
+"""
 
 import json
 import logging
@@ -51,26 +58,6 @@ class MemoryProfile(BaseModel):
     available: bool = False
 
 
-ADAPTATION_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "adapted_text": {"type": "string"},
-        "struggle_patterns": {"type": "array", "items": {"type": "string"}},
-    },
-    "required": ["adapted_text", "struggle_patterns"],
-    "additionalProperties": False,
-}
-
-SYSTEM_PROMPT = """You are Lumina, an accessibility-focused reading assistant.
-Rewrite the supplied passage to reduce reading friction. Preserve its meaning and
-important details. Use shorter sentences, common vocabulary, active phrasing, and
-small readable chunks where useful. Do not add facts or commentary.
-
-Also identify why this specific original passage could be difficult to read. Return
-short, lowercase snake_case tags based only on real features in the input, such as
-long_sentence, technical_jargon, passive_voice, dense_clause, or abstract_language.
-Return an empty list if no clear friction pattern is present."""
-
 CLAUDE_MEM_URL = os.getenv("CLAUDE_MEM_URL", "http://127.0.0.1:37701").rstrip("/")
 CLAUDE_MEM_PROJECT_PREFIX = "lumina-reader"
 RECURRENCE_THRESHOLD = 3
@@ -114,13 +101,10 @@ def memory_profile(reader_session_id: str) -> MemoryProfile:
     if result is None:
         return MemoryProfile()
 
-    # Claude-Mem v13 calls this list `items`; older workers call it `observations`.
     observations = result.get("items", result.get("observations", []))
     counts: dict[str, int] = {}
     for observation in observations:
         serialized = json.dumps(observation).lower()
-        # The marker is embedded in every Lumina event, so the worker's processed
-        # observation remains machine-readable while still benefiting from its AI summary.
         for pattern in set(PATTERN_MARKER.findall(serialized)):
             counts[pattern] = counts.get(pattern, 0) + 1
 
@@ -155,8 +139,6 @@ def record_claude_mem_observation(
         "personalized": personalized,
         "personalization_trigger": trigger,
     }
-    # Initialize is idempotent. Claude-Mem immediately queues the observation and
-    # compresses/stores it asynchronously, so Lumina never waits for that work.
     claude_mem_request(
         "POST",
         "/api/sessions/init",
@@ -181,60 +163,147 @@ def record_claude_mem_observation(
     )
 
 
-def adapt_with_llm(text: str, recurring_pattern: str | None = None) -> AdaptResponse:
-    """Call OpenAI with a strict JSON schema so the frontend always gets usable data."""
+# ---------------------------------------------------------------------------
+# Rule-based text simplification (no LLM / API key required)
+# ---------------------------------------------------------------------------
 
-    from openai import OpenAI
+# Longer, more specific phrases first so they match before their component words do.
+SIMPLIFICATION_MAP: list[tuple[str, str]] = [
+    (r"\bsynthetic computational architectures\b", "computer systems"),
+    (r"\bbiological neural networks\b", "the brain's networks"),
+    (r"\bneural engineering\b", "brain-computer engineering"),
+    (r"\bcognitive fatigue\b", "mental tiredness"),
+    (r"\bdense technical documentation\b", "hard technical text"),
+    (r"\bin order to\b", "to"),
+    (r"\bprior to\b", "before"),
+    (r"\bdue to the fact that\b", "because"),
+    (r"\bwith respect to\b", "about"),
+    (r"\butiliz(e|es|ed|ing)\b", "use"),
+    (r"\bfacilitat(e|es|ed|ing)\b", "help"),
+    (r"\bnecessitat(e|es|ed|ing)\b", "need"),
+    (r"\bsubsequently\b", "then"),
+    (r"\bapproximately\b", "about"),
+    (r"\bdemonstrat(e|es|ed|ing)\b", "show"),
+    (r"\bregarding\b", "about"),
+    (r"\bsignificantly\b", "greatly"),
+    (r"\bsignificant\b", "big"),
+    (r"\bnumerous\b", "many"),
+    (r"\bindividuals\b", "people"),
+    (r"\bmethodology\b", "method"),
+    (r"\badditional\b", "more"),
+    (r"\bsufficient\b", "enough"),
+    (r"\bcomprehensive\b", "complete"),
+    (r"\bimplement(s|ed|ing)?\b", "do"),
+    (r"\bcomponents?\b", "parts"),
+    (r"\bfurthermore\b", "also"),
+    (r"\btherefore\b", "so"),
+    (r"\bhowever\b", "but"),
+    (r"\bcommenc(e|es|ed|ing)\b", "start"),
+    (r"\bterminat(e|es|ed|ing)\b", "end"),
+    (r"\bobtain(s|ed|ing)?\b", "get"),
+    (r"\brequir(e|es|ed|ing)\b", "need"),
+    (r"\bassist(s|ed|ing)?\b", "help"),
+    (r"\bindicat(e|es|ed|ing)\b", "show"),
+    (r"\bconstruct(s|ed|ing)?\b", "build"),
+    (r"\boccur(s|red|ring)?\b", "happen"),
+    (r"\battempt(s|ed|ing)?\b", "try"),
+    (r"\binduces\b", "causes"),
+    (r"\binduce\b", "cause"),
+    (r"\binduced\b", "caused"),
+    (r"\binducing\b", "causing"),
+    (r"\bprocessing\b", "working through"),
+    (r"\butilization\b", "use"),
+]
 
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is not configured")
 
-    client = OpenAI(api_key=api_key)
-    personalization_instruction = ""
-    if recurring_pattern:
-        personalization_instruction = (
-            f"\nThis reader has repeatedly struggled with {recurring_pattern}. "
-            "Adapt more proactively for that pattern: reduce it as much as possible, "
-            "use one clear idea per sentence, and add short line breaks where helpful."
-        )
+def simplify_vocabulary(text: str) -> str:
+    """Swap detected jargon/complex words for simpler equivalents, preserving case."""
 
-    response = client.responses.create(
-        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-        input=[
-            {"role": "system", "content": SYSTEM_PROMPT + personalization_instruction},
-            {"role": "user", "content": text},
-        ],
-        text={
-            "format": {
-                "type": "json_schema",
-                "name": "lumina_adaptation",
-                "strict": True,
-                "schema": ADAPTATION_SCHEMA,
-            }
-        },
-    )
-    result = json.loads(response.output_text)
-    return AdaptResponse(
-        adapted_text=result["adapted_text"].strip(),
-        user_friction_profile=FrictionProfile(
-            struggle_patterns=[tag.strip().lower() for tag in result["struggle_patterns"]]
-        ),
-    )
+    result = text
+    for pattern, replacement in SIMPLIFICATION_MAP:
+        def repl(match: re.Match, replacement: str = replacement) -> str:
+            original = match.group(0)
+            if original[:1].isupper():
+                return replacement[:1].upper() + replacement[1:]
+            return replacement
+
+        result = re.sub(pattern, repl, result, flags=re.IGNORECASE)
+    return result
 
 
-def fallback_profile(text: str) -> list[str]:
-    """Give a transparent, text-derived profile when the LLM is unavailable."""
+def split_into_chunks(text: str, aggressive: bool = False) -> list[str]:
+    """Break long sentences into short, readable chunks."""
+
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s.strip()]
+    max_words = 12 if aggressive else 18
+    split_markers = [", which", ", and", ", but", ", because", ", since", "; "]
+
+    chunks: list[str] = []
+    for sentence in sentences:
+        words = sentence.split()
+        if len(words) <= max_words:
+            chunks.append(sentence)
+            continue
+
+        best_idx, best_marker = -1, ""
+        midpoint = len(sentence) // 2
+        for marker in split_markers:
+            idx = sentence.find(marker)
+            if idx != -1 and (best_idx == -1 or abs(idx - midpoint) < abs(best_idx - midpoint)):
+                best_idx, best_marker = idx, marker
+
+        if best_idx != -1:
+            first = sentence[:best_idx].strip()
+            second = sentence[best_idx + len(best_marker):].strip()
+            if first and not first.endswith((".", "!", "?")):
+                first += "."
+            if second:
+                second = second[0].upper() + second[1:]
+                if not second.endswith((".", "!", "?")):
+                    second += "."
+            chunks.extend([c for c in (first, second) if c])
+        elif aggressive and "," in sentence:
+            parts = [p.strip() for p in sentence.split(",") if p.strip()]
+            for i, part in enumerate(parts):
+                if not part.endswith((".", "!", "?")):
+                    part += "." if i == len(parts) - 1 else ","
+                chunks.append(part)
+        else:
+            chunks.append(sentence)
+
+    return chunks
+
+
+def analyze_struggle_patterns(text: str) -> list[str]:
+    """Derive friction tags from real features of the input text."""
 
     patterns: list[str] = []
     sentences = re.split(r"[.!?]+", text)
-    if any(len(sentence.split()) >= 25 for sentence in sentences):
+    if any(len(s.split()) >= 20 for s in sentences):
         patterns.append("long_sentence")
     if len(re.findall(r"\b\w{12,}\b", text)) >= 2:
         patterns.append("complex_vocabulary")
     if text.count(",") >= 3 or text.count(";") >= 1:
         patterns.append("dense_clause")
+    if re.search(r"\b(is|are|was|were|been|being)\s+\w+ed\b", text, re.IGNORECASE):
+        patterns.append("passive_voice")
+    if not patterns:
+        patterns.append("general_complexity")
     return patterns
+
+
+def adapt_rule_based(text: str, recurring_pattern: str | None = None) -> AdaptResponse:
+    """Rewrite text using rules only -- no network call, no API key needed."""
+
+    patterns = analyze_struggle_patterns(text)
+    simplified = simplify_vocabulary(text)
+    aggressive = recurring_pattern is not None
+    chunks = split_into_chunks(simplified, aggressive=aggressive)
+    adapted_text = "\n".join(chunks)
+    return AdaptResponse(
+        adapted_text=adapted_text,
+        user_friction_profile=FrictionProfile(struggle_patterns=patterns),
+    )
 
 
 @app.post("/api/adapt", response_model=AdaptResponse)
@@ -244,15 +313,13 @@ async def adapt(request: AdaptRequest, background_tasks: BackgroundTasks) -> Ada
     profile = await run_in_threadpool(memory_profile, request.reader_session_id)
     try:
         result = await run_in_threadpool(
-            adapt_with_llm, request.text, profile.recurring_pattern
+            adapt_rule_based, request.text, profile.recurring_pattern
         )
     except Exception:
         logger.exception("Lumina adaptation failed for paragraph %s", request.paragraph_id)
         result = AdaptResponse(
             adapted_text=request.text,
-            user_friction_profile=FrictionProfile(
-                struggle_patterns=fallback_profile(request.text)
-            ),
+            user_friction_profile=FrictionProfile(struggle_patterns=["general_complexity"]),
         )
 
     result.personalized = profile.recurring_pattern is not None
@@ -277,7 +344,7 @@ async def get_memory(
     return await run_in_threadpool(memory_profile, reader_session_id)
 
 
-app.mount("/", StaticFiles(directory=Path(__file__).parent, html=True), name="public")
+app.mount("/", StaticFiles(directory=Path(__file__).parent / "public", html=True), name="public")
 
 if __name__ == "__main__":
     import uvicorn
