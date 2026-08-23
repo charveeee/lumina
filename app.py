@@ -280,4 +280,6 @@ async def get_memory(
 app.mount("/", StaticFiles(directory=Path(__file__).parent, html=True), name="public")
 
 if __name__ == "__main__":
-    import
+    import uvicorn
+
+    uvicorn.run(app, host="127.0.0.1", port=8000)
