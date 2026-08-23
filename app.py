@@ -48,6 +48,7 @@ class AdaptResponse(BaseModel):
     personalized: bool = False
     personalization_trigger: str | None = None
     memory_pattern_count: int = 0
+    intensity: str = "light"
 
 
 class MemoryProfile(BaseModel):
@@ -231,12 +232,45 @@ def simplify_vocabulary(text: str) -> str:
     return result
 
 
-def split_into_chunks(text: str, aggressive: bool = False) -> list[str]:
-    """Break long sentences into short, readable chunks."""
+def intensity_for_dwell(dwell_seconds: float, forced_max: bool = False) -> str:
+    """Map how long a reader has been stuck on a paragraph to a simplification tier."""
+
+    if forced_max or dwell_seconds >= 6:
+        return "aggressive"
+    if dwell_seconds >= 4:
+        return "moderate"
+    return "light"
+
+
+_MAX_WORDS_BY_INTENSITY = {"light": 18, "moderate": 10, "aggressive": 6}
+
+
+def hard_wrap(piece: str, max_words: int) -> list[str]:
+    """Force-wrap a chunk into fixed-size word groups when no natural break exists.
+
+    Used only at the highest intensity so a stubborn short-but-dense sentence
+    still visibly fragments further, rather than looking identical to a lower tier.
+    """
+
+    core = piece.rstrip(".!?")
+    words = core.split()
+    if len(words) <= max_words:
+        return [piece]
+    out = []
+    for i in range(0, len(words), max_words):
+        group = " ".join(words[i : i + max_words])
+        if not group.endswith((".", "!", "?")):
+            group += "."
+        out.append(group)
+    return out
+
+
+def split_into_chunks(text: str, intensity: str = "light") -> list[str]:
+    """Break long sentences into short, readable chunks. Higher intensity -> shorter chunks."""
 
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s.strip()]
-    max_words = 12 if aggressive else 18
-    split_markers = [", which", ", and", ", but", ", because", ", since", "; "]
+    max_words = _MAX_WORDS_BY_INTENSITY.get(intensity, 18)
+    split_markers = [", which", ", and", ", but", ", because", ", since", " and ", "; "]
 
     chunks: list[str] = []
     for sentence in sentences:
@@ -262,14 +296,14 @@ def split_into_chunks(text: str, aggressive: bool = False) -> list[str]:
                 if not second.endswith((".", "!", "?")):
                     second += "."
             chunks.extend([c for c in (first, second) if c])
-        elif aggressive and "," in sentence:
-            parts = [p.strip() for p in sentence.split(",") if p.strip()]
-            for i, part in enumerate(parts):
-                if not part.endswith((".", "!", "?")):
-                    part += "." if i == len(parts) - 1 else ","
-                chunks.append(part)
         else:
             chunks.append(sentence)
+
+    if intensity == "aggressive":
+        expanded: list[str] = []
+        for chunk in chunks:
+            expanded.extend(hard_wrap(chunk, max_words))
+        chunks = expanded
 
     return chunks
 
@@ -292,18 +326,26 @@ def analyze_struggle_patterns(text: str) -> list[str]:
     return patterns
 
 
-def adapt_rule_based(text: str, recurring_pattern: str | None = None) -> AdaptResponse:
-    """Rewrite text using rules only -- no network call, no API key needed."""
+def adapt_rule_based(
+    text: str, dwell_seconds: float = 2.0, recurring_pattern: str | None = None
+) -> tuple[AdaptResponse, str]:
+    """Rewrite text using rules only -- no network call, no API key needed.
+
+    Simplification gets more aggressive the longer the reader has been stuck
+    (dwell_seconds), and maxes out immediately if Claude-Mem flagged a
+    recurring struggle pattern for this reader.
+    """
 
     patterns = analyze_struggle_patterns(text)
     simplified = simplify_vocabulary(text)
-    aggressive = recurring_pattern is not None
-    chunks = split_into_chunks(simplified, aggressive=aggressive)
+    intensity = intensity_for_dwell(dwell_seconds, forced_max=recurring_pattern is not None)
+    chunks = split_into_chunks(simplified, intensity=intensity)
     adapted_text = "\n".join(chunks)
-    return AdaptResponse(
+    response = AdaptResponse(
         adapted_text=adapted_text,
         user_friction_profile=FrictionProfile(struggle_patterns=patterns),
     )
+    return response, intensity
 
 
 @app.post("/api/adapt", response_model=AdaptResponse)
@@ -312,9 +354,10 @@ async def adapt(request: AdaptRequest, background_tasks: BackgroundTasks) -> Ada
 
     profile = await run_in_threadpool(memory_profile, request.reader_session_id)
     try:
-        result = await run_in_threadpool(
-            adapt_rule_based, request.text, profile.recurring_pattern
+        result, intensity = await run_in_threadpool(
+            adapt_rule_based, request.text, request.dwell_seconds, profile.recurring_pattern
         )
+        result.intensity = intensity
     except Exception:
         logger.exception("Lumina adaptation failed for paragraph %s", request.paragraph_id)
         result = AdaptResponse(
