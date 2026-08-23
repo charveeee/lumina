@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>DyslexiFlow AI — Adaptive Reader</title>
+  <style>
+
+    @font-face {
+      font-family: 'OpenDyslexic';
+      src: url('https://cdn.jsdelivr.net/fontsource/fonts/opendyslexic@5.3.0/latin-400-normal.woff2') format('woff2');
+      font-weight: normal;
+      font-style: normal;
+    }
+
+    body {
+      background-color: #f8fafc;
+      color: #1e293b;
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 40px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .container {
+      max-width: 750px;
+      background: white;
+      padding: 32px;
+      border-radius: 12px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+      transition: all 0.3s ease;
+    }
+
+
+    .dyslexia-mode {
+      font-family: 'OpenDyslexic', sans-serif !important;
+      letter-spacing: 0.12em !important;
+      word-spacing: 0.25em !important;
+      line-height: 2.0 !important;
+      background-color: #fef08a !important; 
+    }
+
+    .reading-paragraph {
+      font-size: 1.25rem;
+      margin-bottom: 24px;
+      padding: 12px;
+      border-radius: 8px;
+      transition: all 0.3s ease;
+      cursor: pointer;
+    }
+
+    .reading-paragraph:hover {
+      background-color: #f1f5f9;
+    }
+
+
+    .bionic-highlight {
+      font-weight: bold;
+      color: #2563eb;
+    }
+
+    .status-bar {
+      margin-top: 20px;
+      font-size: 0.9rem;
+      color: #64748b;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container" id="readerCard">
+    <h1>DyslexiFlow AI Reader</h1>
+    <hr style="margin-bottom: 24px; border: 0; border-top: 1px solid #e2e8f0;">
+
+    <p class="reading-paragraph" id="p1">
+      Neural engineering focuses on building interfaces between artificial systems and biological neural networks. Understanding complex software architectures often requires processing dense technical documentation at a rapid pace.
+    </p>
+
+    <p class="reading-paragraph" id="p2">
+      For individuals with reading difficulties, visual crowding and phonological processing latency can lead to severe cognitive fatigue, significantly lowering comprehension and processing speed.
+    </p>
+
+    <div class="status-bar" id="status">Status: Monitoring Reading Pace...</div>
+  </div>
+
+  <script>
+    let hoverTimer;
+    const paragraphs = document.querySelectorAll('.reading-paragraph');
+    const statusEl = document.getElementById('status');
+    const container = document.getElementById('readerCard');
+
+    paragraphs.forEach(p => {
+      p.addEventListener('mouseenter', () => {
+
+        hoverTimer = setTimeout(() => {
+          triggerDyslexiaAssistance(p);
+        }, 2000); 
+      });
+
+      p.addEventListener('mouseleave', () => {
+        clearTimeout(hoverTimer);
+      });
+    });
+
+    function triggerDyslexiaAssistance(element) {
+      statusEl.innerText = "Status: Friction Detected! Applying DyslexiFlow Formatting...";
+      
+  
+      container.classList.add('dyslexia-mode');
+
+
+      let words = element.innerText.split(' ');
+      let transformedWords = words.map(word => {
+        if (word.length > 3) {
+          return `<span class="bionic-highlight">${word.slice(0, 3)}</span>${word.slice(3)}`;
+        }
+        return `<b>${word.slice(0, 1)}</b>${word.slice(1)}`;
+      });
+
+      element.innerHTML = transformedWords.join(' ');
+    }
+  </script>
+</body>
+</html>
